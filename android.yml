@@ -1,0 +1,82 @@
+name: Build Android APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Arrange files (works even if everything was uploaded flat)
+        run: |
+          mkdir -p www native resources
+          for f in index.html bridge.js; do if [ -f "$f" ]; then mv "$f" www/; fi; done
+          for f in FastRenderPlugin.java MainActivity.java OverlayVideo.java; do if [ -f "$f" ]; then mv "$f" native/; fi; done
+          if [ -f make_icons.py ]; then mv make_icons.py resources/; fi
+          if [ -f debug.keystore ]; then mv debug.keystore native/; fi
+          ls -R www native resources
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Install
+        run: |
+          npm install
+      - name: Add Android platform
+        run: |
+          npx cap add android
+      - name: App icon (Onelly Edit)
+        run: |
+          sudo apt-get install -y fonts-dejavu-core > /dev/null
+          pip install pillow
+          python3 resources/make_icons.py
+          RES=android/app/src/main/res
+          cp -r resources/android/mipmap-* $RES/
+          rm -f $RES/mipmap-anydpi-v26/*.xml
+          mkdir -p $RES/mipmap-anydpi-v26
+          printf '<?xml version="1.0" encoding="utf-8"?>\n<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">\n    <background android:drawable="@mipmap/ic_launcher_background"/>\n    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>\n</adaptive-icon>\n' > $RES/mipmap-anydpi-v26/ic_launcher.xml
+          cp $RES/mipmap-anydpi-v26/ic_launcher.xml $RES/mipmap-anydpi-v26/ic_launcher_round.xml
+          printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ic_launcher_background">#6C4CF1</color>\n</resources>\n' > $RES/values/ic_launcher_background.xml
+      - name: Permissions (microphone for voice recording)
+        run: |
+          MAN=android/app/src/main/AndroidManifest.xml
+          sed -i 's#<application#<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <application#' "$MAN"
+      - name: Allow fast local upload (cleartext to 127.0.0.1 only)
+        run: |
+          RES=android/app/src/main/res
+          MAN=android/app/src/main/AndroidManifest.xml
+          mkdir -p $RES/xml
+          printf '<?xml version="1.0" encoding="utf-8"?>\n<network-security-config>\n    <domain-config cleartextTrafficPermitted="true">\n        <domain includeSubdomains="false">127.0.0.1</domain>\n    </domain-config>\n</network-security-config>\n' > $RES/xml/network_security_config.xml
+          grep -q networkSecurityConfig "$MAN" || sed -i 's#<application#<application android:networkSecurityConfig="@xml/network_security_config"#' "$MAN"
+          grep -n "networkSecurityConfig" "$MAN"
+      - name: Native fast-export plugin (Media3 Transformer, GPU)
+        run: |
+          mkdir -p android/app/src/main/java/app/onelly/edit
+          cp native/*.java android/app/src/main/java/app/onelly/edit/
+          sed -i '0,/^dependencies {/s//dependencies {\n    implementation "androidx.media3:media3-transformer:1.4.1"\n    implementation "androidx.media3:media3-effect:1.4.1"\n    implementation "androidx.media3:media3-common:1.4.1"/' android/app/build.gradle
+      - name: Fixed signing key (new APK installs over the old one, no uninstall)
+        run: |
+          mkdir -p ~/.android
+          if [ -f native/debug.keystore ] && keytool -list -keystore native/debug.keystore -storepass android > /dev/null 2>&1; then cp native/debug.keystore ~/.android/debug.keystore; else echo 'keystore skipped'; fi
+      - name: Build number (an older APK can no longer be installed over a newer one)
+        run: |
+          f=android/app/build.gradle
+          sed -i "s/versionCode [0-9]\+/versionCode ${{ github.run_number }}/" $f
+          sed -i "s/versionName \"[^\"]*\"/versionName \"v13-build-${{ github.run_number }}\"/" $f
+          grep -n "versionCode\|versionName" $f
+      - name: Sync
+        run: |
+          npx cap sync android
+      - name: Build debug APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+      - uses: actions/upload-artifact@v5
+        with:
+          name: onelly-edit-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk

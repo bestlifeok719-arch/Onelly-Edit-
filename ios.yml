@@ -1,0 +1,25 @@
+name: Build iOS (simulator, unsigned)
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npx cap add ios
+      - name: Permissions
+        run: |
+          /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string Voice recording for your video" ios/App/App/Info.plist
+      - run: npx cap sync ios
+      - name: Build
+        run: |
+          xcodebuild -workspace ios/App/App.xcworkspace -scheme App -sdk iphonesimulator -configuration Debug -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+      - run: cd build/Build/Products/Debug-iphonesimulator && zip -r "$GITHUB_WORKSPACE/OnellyEdit-simulator.zip" App.app
+      - uses: actions/upload-artifact@v5
+        with:
+          name: onelly-edit-ios-simulator
+          path: OnellyEdit-simulator.zip
