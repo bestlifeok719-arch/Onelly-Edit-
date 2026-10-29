@@ -172,6 +172,7 @@ public class FastRenderPlugin extends Plugin {
     private static void setPausedFlag(boolean p) {
         synchronized (PAUSE_LOCK) {
             paused = p;
+            TurboRender.paused = p;
             PAUSE_LOCK.notifyAll();
         }
     }
@@ -191,6 +192,7 @@ public class FastRenderPlugin extends Plugin {
         o.put("diag", true);
         o.put("par", true);
         o.put("mux", true);
+        o.put("turbo", true);
         o.put("v", 16);
         call.resolve(o);
     }
@@ -291,8 +293,34 @@ public class FastRenderPlugin extends Plugin {
         }, "onelly-mux").start();
     }
 
+    /** v16: Turbo export = own engine (TurboRender): hardware decoder -> OpenGL -> hardware encoder. Independent of Media3, Fast Export and Standard Export. */
+    @PluginMethod
+    public void turbo(final PluginCall call) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    TurboRender tr = new TurboRender(getContext().getCacheDir(), new TurboRender.Progress() {
+                        @Override
+                        public void on(double percent, double fps) {
+                            JSObject o = new JSObject();
+                            o.put("p", percent);
+                            o.put("fps", fps);
+                            notifyListeners("progress", o);
+                        }
+                    });
+                    org.json.JSONObject r = tr.run(call.getData());
+                    call.resolve(new JSObject(r.toString()));
+                } catch (Throwable e) {
+                    call.reject("turbo: " + e);
+                }
+            }
+        }, "onelly-turbo").start();
+    }
+
     @PluginMethod
     public void cancel(PluginCall call) {
+        TurboRender.cancel = true;
         setPausedFlag(false);
         main.post(() -> {
             if (transformer != null) {
@@ -412,6 +440,7 @@ public class FastRenderPlugin extends Plugin {
                 return;
             }
             String name = null, tok = null;
+            long wpos = -1; // v16: write this body at an exact position of the file (export is streamed into the app while it is made)
             int q = rp[1].indexOf('?');
             if (q >= 0) {
                 for (String kv : rp[1].substring(q + 1).split("&")) {
@@ -420,6 +449,7 @@ public class FastRenderPlugin extends Plugin {
                     String k = kv.substring(0, e), v = java.net.URLDecoder.decode(kv.substring(e + 1), "UTF-8");
                     if ("name".equals(k)) name = v;
                     else if ("t".equals(k)) tok = v;
+                    else if ("pos".equals(k)) wpos = Long.parseLong(v);
                 }
             }
             if (tok == null || !tok.equals(upToken) || name == null || !name.matches("[A-Za-z0-9._-]{1,64}") || len < 0) {
@@ -427,6 +457,24 @@ public class FastRenderPlugin extends Plugin {
                 return;
             }
             File dst = new File(getContext().getCacheDir(), name);
+            if (wpos >= 0) {
+                try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(dst, "rw")) {
+                    raf.seek(wpos);
+                    byte[] buf = new byte[1 << 18];
+                    long left = len;
+                    while (left > 0) {
+                        int n = in.read(buf, 0, (int) Math.min(buf.length, left));
+                        if (n < 0) throw new java.io.IOException("short body");
+                        raf.write(buf, 0, n);
+                        left -= n;
+                    }
+                } catch (Exception e) {
+                    reply(out, 500, "fail");
+                    return;
+                }
+                reply(out, 200, "");
+                return;
+            }
             File tmp = new File(getContext().getCacheDir(), name + ".part");
             try (FileOutputStream fo = new FileOutputStream(tmp)) {
                 byte[] buf = new byte[1 << 18];
