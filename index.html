@@ -2517,43 +2517,81 @@ document.getElementById("exp").addEventListener("click",function(e){if(bypass){b
     return { v: variants, ts: tr.ts, m: tr.m, brk: tr.brk };
   }
 
-  async function run(FR, cfg) {
-    var W = cfg.W, H = cfg.H, c = clips[0], T = len(c), info = W + '×' + H + ' · 🚀 Turbo Export';
-    var st = function (s) { var e = $('#xst'); if (e) e.textContent = s; };
-    var wait = async function () { while (XO.paused && !XO.cancel) await sleep(200); if (XO.cancel) throw new Error('cancelled'); };
-    XO.mode = 'bal'; XO.gif = []; XO.cancel = false; xoShow(info);
-    XO.rec = {
-      state: 'recording',
-      pause: function () { this.state = 'paused'; FR.setPaused({ paused: true }).catch(function () { }); },
-      resume: function () { this.state = 'recording'; FR.setPaused({ paused: false }).catch(function () { }); },
-      stop: function () { XO.cancel = true; try { XO.paused = false; } catch (_) { } FR.cancel().catch(function () { }); }
+  /* ------------------------------------------------------------------ Turbo's own progress / result screen (nothing from the Standard export screen) */
+  var UI = null;
+  var TX2 = {
+    en: { pause: '⏸ Pause', resume: '▶ Resume', cancel: '✕ Cancel', p1: '📥 Preparing the video (only the first time)', p2: '🖼 Preparing overlays', p3: '🚀 Rendering on the GPU', p4: '📁 Saving in the app',
+      left: 'left', rt: '× faster than the video length', done: 'Done', play: '▶ Play', save: '⬇ Save to phone', close: 'Close', kept: 'saved in the app', engine: 'Turbo GPU engine' },
+    om: { pause: '⏸ Dhaabi', resume: '▶ Itti fufi', cancel: '✕ Dhiisi', p1: '📥 Viidiyoo qopheessaa (si\'a jalqabaa qofa)', p2: '🖼 Overlay qopheessaa', p3: '🚀 GPU irratti hojjachaa', p4: '📁 App keessatti kuusaa',
+      left: 'hafe', rt: '× dheerina viidiyoo caalaa saffisaa', done: 'Xumurame', play: '▶ Taphi', save: '⬇ Bilbila irratti olkaa\'i', close: 'Cufi', kept: 'app keessatti kuufame', engine: 'Injinii GPU Turbo' }
+  };
+  var T2 = function (k) { var l = (typeof lang !== 'undefined' && TX2[lang]) ? lang : 'en'; return TX2[l][k] || TX2.en[k] || k; };
+  var fmtT = function (s) { s = Math.max(0, Math.round(s)); var m = Math.floor(s / 60); return m >= 60 ? Math.floor(m / 60) + ':' + String(m % 60).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0') : m + ':' + String(s % 60).padStart(2, '0'); };
+  function uiBtn(id, text, main) { return '<button id="' + id + '" style="border:0;border-radius:14px;padding:14px 22px;font:700 15px system-ui;color:#fff;background:' + (main ? '#7c5cff' : '#2a2a44') + '">' + text + '</button>'; }
+  function uiOpen(info, FR) {
+    uiClose();
+    var d = document.createElement('div'); d.id = 'tbo';
+    d.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#0b0b14;color:#fff;font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center';
+    d.innerHTML = '<div style="font-size:22px;font-weight:800">🚀 Turbo Export</div><div id="tbo-info" style="opacity:.75;font-size:13px"></div>' +
+      '<div id="tbo-pct" style="font-size:56px;font-weight:800;line-height:1">0%</div>' +
+      '<div style="width:min(420px,90%);height:12px;border-radius:7px;background:#23233a;overflow:hidden"><i id="tbo-bar" style="display:block;height:100%;width:0;background:linear-gradient(90deg,#7c5cff,#c8ff3d)"></i></div>' +
+      '<div id="tbo-ph" style="font-size:15px"></div><div id="tbo-eta" style="opacity:.85;font-size:14px"></div><div id="tbo-sp" style="opacity:.85;font-size:14px"></div>' +
+      '<div id="tbo-act" style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:8px"></div><div id="tbo-dg" style="font-size:11px;opacity:.6;max-width:92%;word-break:break-word"></div>';
+    document.body.appendChild(d);
+    UI = { el: d, cancel: false, paused: false, wl: null, FR: FR };
+    document.getElementById('tbo-info').textContent = info;
+    try { if (navigator.wakeLock) navigator.wakeLock.request('screen').then(function (l) { UI.wl = l; }).catch(function () { }); } catch (_) { }
+    var act = document.getElementById('tbo-act');
+    act.innerHTML = uiBtn('tbo-p', T2('pause'), false) + uiBtn('tbo-c', T2('cancel'), false);
+    document.getElementById('tbo-p').onclick = function () {
+      UI.paused = !UI.paused; this.textContent = UI.paused ? T2('resume') : T2('pause');
+      FR.setPaused({ paused: UI.paused }).catch(function () { });
     };
-    XO.off = true; try { gameToggle(false); } catch (_) { }
+    document.getElementById('tbo-c').onclick = function () { UI.cancel = true; UI.paused = false; FR.setPaused({ paused: false }).catch(function () { }); FR.cancel().catch(function () { }); };
+  }
+  function uiSet(frac, phase, eta, speed) {
+    if (!UI) return;
+    var p = Math.max(0, Math.min(1, frac)), g = function (i) { return document.getElementById(i); };
+    g('tbo-pct').textContent = RND(p * 100) + '%'; g('tbo-bar').style.width = (p * 100) + '%';
+    if (phase != null) g('tbo-ph').textContent = phase;
+    if (eta != null) g('tbo-eta').textContent = eta;
+    if (speed != null) g('tbo-sp').textContent = speed;
+  }
+  function uiClose() {
+    if (!UI) { var o = document.getElementById('tbo'); if (o) o.remove(); return; }
+    try { if (UI.wl) UI.wl.release(); } catch (_) { }
+    try { UI.el.remove(); } catch (_) { }
+    UI = null;
+  }
+
+  async function run(FR, cfg) {
+    var W = cfg.W, H = cfg.H, c = clips[0], T = len(c), info = W + '×' + H + ' · ' + (cfg.fps ? cfg.fps + ' fps' : '') + (cfg.codec === 'hevc' ? ' · H.265' : ' · H.264');
+    uiOpen(info, FR);
+    var wait = async function () { while (UI && UI.paused && !UI.cancel) await sleep(200); if (!UI || UI.cancel) throw new Error('cancelled'); };
     var t0 = performance.now(), sub = null;
     try {
-      st('📥 …'); xoSet(0);
-      var src = await copySource(FR, c.url, function (f) { xoSet(.15 * f); st('📥 ' + RND(f * 100) + '%'); });
+      uiSet(0, T2('p1'), '', '');
+      var src = await copySource(FR, c.url, function (f) { uiSet(.15 * f, T2('p1') + ' ' + RND(f * 100) + '%'); });
       var tCopy = performance.now();
       await wait();
-      /* overlays -> pictures + motion tracks */
-      st('🖼 …'); xoSet(.15);
+      uiSet(.15, T2('p2'));
       var cv = document.createElement('canvas'); cv.width = W; cv.height = H;
       var x = cv.getContext('2d'), layers = [];
       for (var i = 0; i < ovs.length; i++) {
         await wait();
         var lay = await overlayLayer(FR, ovs[i], i, W, H, T, x);
         if (lay) layers.push(lay);
-        xoSet(.15 + .1 * (i + 1) / Math.max(1, ovs.length));
+        uiSet(.15 + .1 * (i + 1) / Math.max(1, ovs.length), T2('p2') + ' ' + (i + 1) + '/' + ovs.length);
         if ((i & 3) === 3) await sleep(0);
       }
       var tScene = performance.now();
       await wait();
       var rStart = performance.now();
       sub = await FR.addListener('progress', function (e) {
-        var p = (e && e.p) || 0;
-        xoSet(.25 + .75 * p / 100);
-        if (!XO.paused) st('🚀 ' + RND(p) + '%' + (e && e.fps ? ' · ' + RND(e.fps) + ' fps' : ''));
-        if (!XO.paused && p > 2) { var q = p / 100, el = $('#xeta'); if (el) el.textContent = fmt((performance.now() - rStart) / 1000 * (1 - q) / q) + ' ' + L('x_left'); }
+        if (!UI) return;
+        var p = (e && e.p) || 0, q = p / 100, el = (performance.now() - rStart) / 1000;
+        uiSet(.25 + .75 * q, T2('p3') + (e && e.fps ? ' · ' + RND(e.fps) + ' fps' : ''),
+          q > .02 ? fmtT(el * (1 - q) / q) + ' ' + T2('left') : '', q > .02 && el > 0.5 ? RND(T * q / el * 10) / 10 + T2('rt') : '');
       });
       var res = await FR.turbo({
         out: 'turbo-out.mp4', width: W, height: H, bitrate: cfg.br, fps: cfg.fps || 0, codec: cfg.codec || 'avc', mute: !!cfg.mute,
@@ -2565,30 +2603,30 @@ document.getElementById("exp").addEventListener("click",function(e){if(bypass){b
         try { await FR.remove({ path: res.path }); } catch (_) { }
         throw new Error('overlays were not drawn (' + dg.join(' ').slice(0, 60) + ')');
       }
-      /* stored inside the app; Play / Save to phone are the person's choice */
+      uiSet(.99, T2('p4'), '', '');
       var fin = expName({ kind: 'turbo', res: Math.min(W, H) + 'p' }), kept = null;
       try { kept = await FR.keepExport({ path: res.path, name: fin }); } catch (_) { kept = null; }
       var sv = null;
       if (!kept) sv = await FR.saveToGallery({ path: res.path, name: fin });
       if (kept) expAdd({ abs: kept.abs, name: fin, mb: res.sizeMB, ts: Date.now(), kind: 'turbo', res: Math.min(W, H) + 'p', dur: RND(T) });
-      try { xoRelease(); } catch (_) { } try { gameToggle(false); } catch (_) { }
-      XO.shown = 1; xoSet(1); $('#xo').className = 'done'; $('#xpct').textContent = '✓'; $('#xtip').textContent = ''; $('#xeta').textContent = ''; st(L('x_done'));
-      var s1 = function (a, b) { return Math.round((b - a) / 100) / 10 + 's'; };
-      var xi = $('#xinfo'), xa = $('#xact');
-      if (xi) xi.textContent = res.sizeMB + ' MB · ' + (kept ? NL('inapp') : sv.where) + ' · ' + NL('k_turbo') + ' · enc ' + (res.enc || '?') + ' · ' + (res.fps || '?') + ' fps · copy ' + s1(t0, tCopy) + ' · overlays ' + s1(tCopy, tScene) + ' (' + layers.length + ') · render ' + s1(rStart, tRend) + ' · hits ' + dg.join(' ').slice(0, 80);
-      if (xa) {
-        if (kept) {
-          var it = { abs: kept.abs, name: fin, mb: res.sizeMB };
-          xa.innerHTML = '<button class="xb main" id="xplay">' + NL('play') + '</button><button class="xb" id="xsave">' + NL('tophone') + '</button><button class="xb" id="xclose">' + L('x_close') + '</button>';
-          $('#xplay').onclick = function () { playExport(it); };
-          $('#xsave').onclick = function () { saveExportToPhone(it, $('#xsave')); };
-          $('#xclose').onclick = xoHide;
-        } else {
-          xa.innerHTML = '<button class="xb main" id="xsave">' + L('x_save') + '</button><button class="xb" id="xclose">' + L('x_close') + '</button>';
-          $('#xsave').onclick = async function () { var b = $('#xsave'); try { if (sv.uri) await FR.shareVideo({ uri: sv.uri }); else b.textContent = '✓ ' + sv.where; } catch (e) { b.textContent = '⚠ ' + (e && e.message || e); } };
-          $('#xclose').onclick = xoHide;
-        }
+      /* result screen */
+      var s1 = function (a, b) { return Math.round((b - a) / 100) / 10 + 's'; }, secR = (tRend - rStart) / 1000;
+      uiSet(1, '✓ ' + T2('done'), '', secR > 0.5 ? RND(T / secR * 10) / 10 + T2('rt') : '');
+      document.getElementById('tbo-pct').textContent = '✓';
+      document.getElementById('tbo-info').textContent = res.sizeMB + ' MB · ' + Math.min(W, H) + 'p · ' + (res.fps || '?') + ' fps · ' + (kept ? NL('inapp') : sv.where);
+      document.getElementById('tbo-dg').textContent = T2('engine') + ' · enc ' + (res.enc || '?') + ' · copy ' + s1(t0, tCopy) + ' · overlays ' + s1(tCopy, tScene) + ' (' + layers.length + ') · render ' + s1(rStart, tRend) + ' · hits ' + dg.join(' ').slice(0, 80);
+      var act = document.getElementById('tbo-act');
+      if (kept) {
+        var it = { abs: kept.abs, name: fin, mb: res.sizeMB };
+        act.innerHTML = uiBtn('tbo-pl', T2('play'), true) + uiBtn('tbo-sv', T2('save'), false) + uiBtn('tbo-cl', T2('close'), false);
+        document.getElementById('tbo-pl').onclick = function () { playExport(it); };
+        document.getElementById('tbo-sv').onclick = function () { saveExportToPhone(it, document.getElementById('tbo-sv')); };
+      } else {
+        act.innerHTML = uiBtn('tbo-sv', T2('save'), true) + uiBtn('tbo-cl', T2('close'), false);
+        document.getElementById('tbo-sv').onclick = async function () { var b = document.getElementById('tbo-sv'); try { if (sv.uri) await FR.shareVideo({ uri: sv.uri }); else b.textContent = '✓ ' + sv.where; } catch (e) { b.textContent = '⚠ ' + (e && e.message || e); } };
       }
+      document.getElementById('tbo-cl').onclick = uiClose;
+      try { if (UI && UI.wl) { UI.wl.release(); UI.wl = null; } } catch (_) { }
     } finally {
       try { if (sub) sub.remove(); } catch (_) { }
     }
@@ -2680,8 +2718,9 @@ document.getElementById("exp").addEventListener("click",function(e){if(bypass){b
     if (!caps.turbo) { try { msg('🚀 Turbo needs the new APK'); } catch (_) { } return; }
     try { await run(FR, cfg); }
     catch (e) {
-      try { xoHide(); } catch (_) { }
-      if (XO.cancel || /cancel/i.test(String(e && e.message || e))) return;
+      var cancelled = !!(UI && UI.cancel) || /cancel/i.test(String(e && e.message || e));
+      uiClose();
+      if (cancelled) return;
       console.warn('turbo', e);
       try { msg('🚀 Turbo: ' + (e && e.message || e)); } catch (_) { }
     }
