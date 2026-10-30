@@ -1411,10 +1411,10 @@ public class FastRenderPlugin extends Plugin {
  * Onelly Edit "Turbo" export engine. Independent of Fast Export, Standard Export and Media3.
  *
  * Pipeline: hardware decoder -> SurfaceTexture -> OpenGL (video + overlay layers) -> hardware encoder surface -> MP4.
- * Nothing runs on the CPU per frame except bookkeeping, so the speed is limited by the phone's video chip only.
- *
- * Stage 1: one clip, text / sticker / photo overlays (timed picture slices made by the web side), source audio copied as is.
- * Layers are a plain list ("Layer"), so more layer kinds (video overlay, filter, transition...) can be added without touching the rest.
+ * Every overlay (text, sticker, photo) is ONE picture (or a few, e.g. typing text) plus a motion track
+ * (position, size, rotation, transparency over time). The GPU moves the picture; nothing is re-drawn on the CPU per frame,
+ * so a 3 hour video with hundreds of moving overlays costs the same as one without.
+ * Layers are a plain list, so more kinds (video overlay, filter, transition...) can be added without touching the rest.
  */
 final class TurboRender {
 
@@ -1432,19 +1432,21 @@ final class TurboRender {
             + "void main(){gl_FragColor=texture2D(sTex,vTc);}";
     private static final String VS_2D = "attribute vec4 aPos;attribute vec2 aTc;varying vec2 vTc;"
             + "void main(){gl_Position=aPos;vTc=aTc;}";
-    private static final String FS_2D = "precision mediump float;varying vec2 vTc;uniform sampler2D sTex;"
-            + "void main(){gl_FragColor=texture2D(sTex,vTc);}";
+    private static final String FS_2D = "precision mediump float;varying vec2 vTc;uniform sampler2D sTex;uniform float uA;"
+            + "void main(){gl_FragColor=texture2D(sTex,vTc)*uA;}";
 
-    /** One overlay layer = a list of timed picture slices (time in output milliseconds, box in output pixels). */
+    /** One overlay: picture variants (time ranges) + a motion track (affine matrix + opacity samples). */
     private static final class Layer {
-        long[] from, to;
-        String[] path;
-        int[] bx, by, bw, bh;
-        int tex = 0;
+        long[] vt0, vt1;
+        String[] vpath;
+        float[] vox, voy;
+        long[] ts;
+        double[] m; // 7 numbers per sample: a b c d e f opacity (canvas style: x' = a x + c y + e)
+        boolean[] brk; // true: do not blend from the previous sample (jump)
+        int tex = 0, vidx = -1, bw = 0, bh = 0;
         String loaded = null;
-        int idx = -1;
+        boolean has = false;
         long frames = 0, hits = 0;
-        boolean hasPic = false;
     }
 
     private final File cache;
@@ -1455,7 +1457,6 @@ final class TurboRender {
         this.pg = pg;
     }
 
-    // ---- GL state ----
     private EGLDisplay eglDisplay = EGL14.EGL_NO_DISPLAY;
     private EGLContext eglContext = EGL14.EGL_NO_CONTEXT;
     private EGLSurface eglSurface = EGL14.EGL_NO_SURFACE;
@@ -1481,34 +1482,38 @@ final class TurboRender {
         final File outFile = new File(cache, a.optString("out", "out.mp4"));
         if (outFile.exists()) outFile.delete();
 
-        // ---- layers from the web side ----
         List<Layer> layers = new ArrayList<>();
         JSONArray ovs = a.optJSONArray("overlays");
         if (ovs != null) {
             for (int i = 0; i < ovs.length(); i++) {
                 JSONObject o = ovs.getJSONObject(i);
-                if (o.has("video")) throw new Exception("turbo: video overlay not supported yet");
-                JSONArray sl = o.optJSONArray("slices");
-                if (sl == null || sl.length() == 0) continue;
+                JSONArray va = o.optJSONArray("v"), ta = o.optJSONArray("ts"), ma = o.optJSONArray("m"), ba = o.optJSONArray("brk");
+                if (va == null || va.length() == 0 || ta == null || ta.length() == 0 || ma == null || ma.length() < 7 * ta.length())
+                    throw new Exception("turbo: bad overlay data");
                 Layer L = new Layer();
-                int n = sl.length();
-                L.from = new long[n];
-                L.to = new long[n];
-                L.path = new String[n];
-                L.bx = new int[n];
-                L.by = new int[n];
-                L.bw = new int[n];
-                L.bh = new int[n];
-                for (int k = 0; k < n; k++) {
-                    JSONObject s = sl.getJSONObject(k);
-                    L.from[k] = s.getLong("fromMs");
-                    L.to[k] = s.getLong("toMs");
-                    L.path[k] = s.optString("path", "");
-                    L.bx[k] = s.optInt("x", 0);
-                    L.by[k] = s.optInt("y", 0);
-                    L.bw[k] = s.optInt("w", 0);
-                    L.bh[k] = s.optInt("h", 0);
+                int nv = va.length();
+                L.vt0 = new long[nv];
+                L.vt1 = new long[nv];
+                L.vpath = new String[nv];
+                L.vox = new float[nv];
+                L.voy = new float[nv];
+                for (int k = 0; k < nv; k++) {
+                    JSONObject v = va.getJSONObject(k);
+                    L.vt0[k] = v.getLong("t0");
+                    L.vt1[k] = v.getLong("t1");
+                    L.vpath[k] = v.optString("path", "");
+                    L.vox[k] = (float) v.optDouble("ox", 0);
+                    L.voy[k] = (float) v.optDouble("oy", 0);
                 }
+                int n = ta.length();
+                L.ts = new long[n];
+                L.brk = new boolean[n];
+                L.m = new double[7 * n];
+                for (int k = 0; k < n; k++) {
+                    L.ts[k] = ta.getLong(k);
+                    L.brk[k] = ba != null && k < ba.length() && ba.optInt(k, 0) != 0;
+                }
+                for (int k = 0; k < 7 * n; k++) L.m[k] = ma.getDouble(k);
                 layers.add(L);
             }
         }
@@ -1543,14 +1548,13 @@ final class TurboRender {
             if (outUs <= inUs) throw new Exception("turbo: empty range");
             final double span = outUs - inUs;
 
-            // ---- encoder (hardware preferred) ----
             MediaFormat ef = MediaFormat.createVideoFormat("video/avc", W, H);
             ef.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
             ef.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
             ef.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
             ef.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2);
             try {
-                ef.setInteger("priority", 1); // best effort = as fast as the chip can
+                ef.setInteger("priority", 1);
                 ef.setInteger("operating-rate", Short.MAX_VALUE);
             } catch (Throwable ignore) {
             }
@@ -1562,7 +1566,7 @@ final class TurboRender {
             enc = MediaCodec.createEncoderByType("video/avc");
             try {
                 enc.configure(ef, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-            } catch (Throwable e) { // some chips refuse High/4.1: plain settings
+            } catch (Throwable e) {
                 try {
                     enc.release();
                 } catch (Throwable ignore) {
@@ -1597,7 +1601,6 @@ final class TurboRender {
             }
             GLES20.glViewport(0, 0, W, H);
 
-            // ---- decoder -> SurfaceTexture ----
             st = new SurfaceTexture(oesTex);
             st.setOnFrameAvailableListener(new SurfaceTexture.OnFrameAvailableListener() {
                 @Override
@@ -1615,7 +1618,6 @@ final class TurboRender {
             ex.selectTrack(vt);
             ex.seekTo(inUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
 
-            // ---- audio: copied as it is from the source ----
             MediaFormat af = null;
             int aTrack = -1;
             if (!mute && at >= 0) {
@@ -1643,7 +1645,6 @@ final class TurboRender {
                 FastRenderPlugin.waitIfPaused(); // same pause mechanism as the rest of the plugin (counted by pauseState)
                 if (cancel) throw new Exception("cancelled");
 
-                // 1) feed the decoder
                 if (!inDone) {
                     int ii = dec.dequeueInputBuffer(0);
                     if (ii >= 0) {
@@ -1660,7 +1661,6 @@ final class TurboRender {
                     }
                 }
 
-                // 2) decoder output -> GL -> encoder
                 if (!decDone) {
                     int oi = dec.dequeueOutputBuffer(di, 2000);
                     if (oi >= 0) {
@@ -1672,8 +1672,7 @@ final class TurboRender {
                             waitFrame();
                             st.updateTexImage();
                             st.getTransformMatrix(texMat);
-                            long tl = (pts - inUs) / 1000L; // output time in ms
-                            drawFrame(layers, tl, W, H);
+                            drawFrame(layers, (pts - inUs) / 1000.0, W, H);
                             EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, (pts - inUs) * 1000L);
                             EGL14.eglSwapBuffers(eglDisplay, eglSurface);
                             frames++;
@@ -1683,7 +1682,6 @@ final class TurboRender {
                     }
                 }
 
-                // 3) encoder output -> muxer
                 while (true) {
                     int ei2 = enc.dequeueOutputBuffer(ei, 0);
                     if (ei2 == MediaCodec.INFO_TRY_AGAIN_LATER) break;
@@ -1709,7 +1707,6 @@ final class TurboRender {
                     }
                 }
 
-                // 4) audio copied alongside the video (keeps the file interleaved)
                 if (muxStarted && !audioDone) {
                     long upto = (lastPtsUs - inUs) + 500000L;
                     while (true) {
@@ -1747,7 +1744,6 @@ final class TurboRender {
                 }
             }
 
-            // finish the rest of the audio
             if (muxStarted && !audioDone) {
                 while (true) {
                     long ts = aex.getSampleTime();
@@ -1824,8 +1820,6 @@ final class TurboRender {
         }
     }
 
-    // ------------------------------------------------------------------ drawing
-
     private void waitFrame() throws Exception {
         synchronized (frameLock) {
             long end = System.currentTimeMillis() + 5000;
@@ -1838,29 +1832,30 @@ final class TurboRender {
         }
     }
 
-    private void drawFrame(List<Layer> layers, long tlMs, int W, int H) {
+    private void drawFrame(List<Layer> layers, double tl, int W, int H) {
         GLES20.glDisable(GLES20.GL_BLEND);
         GLES20.glClearColor(0f, 0f, 0f, 1f);
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
-        // video
         GLES20.glUseProgram(progOes);
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTex);
         GLES20.glUniform1i(GLES20.glGetUniformLocation(progOes, "sTex"), 0);
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(progOes, "uTex"), 1, false, texMat, 0);
-        quad(progOes, -1f, -1f, 1f, 1f, true);
-        // overlay layers, in the order they were given
+        quadRect(progOes, -1f, -1f, 1f, 1f, true);
+        if (layers.isEmpty()) return;
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA); // pictures are premultiplied
         GLES20.glUseProgram(progTex);
         GLES20.glUniform1i(GLES20.glGetUniformLocation(progTex, "sTex"), 0);
+        int uA = GLES20.glGetUniformLocation(progTex, "uA");
+        float[] q = new float[8];
         for (Layer L : layers) {
             L.frames++;
-            int i = find(L, tlMs);
-            if (i < 0) continue;
-            if (i != L.idx) {
-                L.idx = i;
-                String p = L.path[i];
+            int vi = findVariant(L, tl);
+            if (vi < 0) continue;
+            if (vi != L.vidx) {
+                L.vidx = vi;
+                String p = L.vpath[vi];
                 if (p != null && p.length() > 0) {
                     if (!p.equals(L.loaded)) {
                         Bitmap b = BitmapFactory.decodeFile(new File(cache, p).getAbsolutePath());
@@ -1868,58 +1863,85 @@ final class TurboRender {
                             GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
                             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, L.tex);
                             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, b, 0);
+                            L.bw = b.getWidth();
+                            L.bh = b.getHeight();
                             b.recycle();
                             L.loaded = p;
-                            L.hasPic = true;
+                            L.has = true;
                         } else {
-                            L.hasPic = false;
+                            L.has = false;
                             L.loaded = null;
                         }
-                    }
-                } else {
-                    L.hasPic = false;
-                }
+                    } else L.has = true;
+                } else L.has = false;
             }
-            if (!L.hasPic) continue;
-            int bw = L.bw[i], bh = L.bh[i];
-            float l, r, tp, bt;
-            if (bw > 0 && bh > 0) {
-                l = L.bx[i] * 2f / W - 1f;
-                r = (L.bx[i] + bw) * 2f / W - 1f;
-                tp = 1f - L.by[i] * 2f / H;
-                bt = 1f - (L.by[i] + bh) * 2f / H;
-            } else { // whole picture (fades)
-                l = -1f;
-                r = 1f;
-                tp = 1f;
-                bt = -1f;
+            if (!L.has) continue;
+            // motion track at this time
+            int n = L.ts.length, i = 0, lo = 0, hi = n - 1;
+            while (lo <= hi) {
+                int mid = (lo + hi) >>> 1;
+                if (L.ts[mid] <= tl) {
+                    i = mid;
+                    lo = mid + 1;
+                } else hi = mid - 1;
+            }
+            double a, b, c, d, e, f, op;
+            int k = 7 * i;
+            if (i >= n - 1 || L.brk[i + 1] || tl <= L.ts[i]) {
+                a = L.m[k]; b = L.m[k + 1]; c = L.m[k + 2]; d = L.m[k + 3]; e = L.m[k + 4]; f = L.m[k + 5]; op = L.m[k + 6];
+            } else {
+                double u = (tl - L.ts[i]) / (double) (L.ts[i + 1] - L.ts[i]);
+                int k2 = k + 7;
+                a = L.m[k] + (L.m[k2] - L.m[k]) * u;
+                b = L.m[k + 1] + (L.m[k2 + 1] - L.m[k + 1]) * u;
+                c = L.m[k + 2] + (L.m[k2 + 2] - L.m[k + 2]) * u;
+                d = L.m[k + 3] + (L.m[k2 + 3] - L.m[k + 3]) * u;
+                e = L.m[k + 4] + (L.m[k2 + 4] - L.m[k + 4]) * u;
+                f = L.m[k + 5] + (L.m[k2 + 5] - L.m[k + 5]) * u;
+                op = L.m[k + 6] + (L.m[k2 + 6] - L.m[k + 6]) * u;
+            }
+            if (op <= 0.002) continue;
+            float ox = L.vox[vi], oy = L.voy[vi];
+            float[] px = {-ox, L.bw - ox, -ox, L.bw - ox}, py = {-oy, -oy, L.bh - oy, L.bh - oy}; // TL TR BL BR
+            for (int z = 0; z < 4; z++) {
+                double X = a * px[z] + c * py[z] + e, Y = b * px[z] + d * py[z] + f;
+                q[2 * z] = (float) (X * 2.0 / W - 1.0);
+                q[2 * z + 1] = (float) (1.0 - Y * 2.0 / H);
             }
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, L.tex);
-            quad(progTex, l, bt, r, tp, false);
+            GLES20.glUniform1f(uA, (float) Math.min(1.0, op));
+            quadPts(progTex, q);
             L.hits++;
         }
     }
 
-    /** Active slice index at time ms (slices are sorted by time), -1 when none. */
-    private static int find(Layer L, long ms) {
-        int lo = 0, hi = L.from.length - 1, idx = -1;
+    private static int findVariant(Layer L, double ms) {
+        int lo = 0, hi = L.vt0.length - 1, idx = -1;
         while (lo <= hi) {
             int mid = (lo + hi) >>> 1;
-            if (L.from[mid] <= ms) {
+            if (L.vt0[mid] <= ms) {
                 idx = mid;
                 lo = mid + 1;
             } else hi = mid - 1;
         }
-        if (idx >= 0 && ms >= L.to[idx]) idx = -1;
+        if (idx >= 0 && ms >= L.vt1[idx]) idx = -1;
         return idx;
     }
 
-    /** Draws a rectangle (l,b)-(r,t) in clip space. video=true: texture coords fill the SurfaceTexture, picture: top row first. */
-    private void quad(int prog, float l, float b, float r, float t, boolean video) {
-        float[] v = video
-                ? new float[]{l, b, 0f, 0f, r, b, 1f, 0f, l, t, 0f, 1f, r, t, 1f, 1f}
-                : new float[]{l, b, 0f, 1f, r, b, 1f, 1f, l, t, 0f, 0f, r, t, 1f, 0f};
+    /** Video: whole-frame rectangle with the SurfaceTexture matrix. */
+    private void quadRect(int prog, float l, float b, float r, float t, boolean video) {
+        float[] v = {l, b, 0f, 0f, r, b, 1f, 0f, l, t, 0f, 1f, r, t, 1f, 1f};
+        draw(prog, v);
+    }
+
+    /** Picture: corners TL, TR, BL, BR in clip space (matching picture corners). */
+    private void quadPts(int prog, float[] q) {
+        float[] v = {q[0], q[1], 0f, 0f, q[2], q[3], 1f, 0f, q[4], q[5], 0f, 1f, q[6], q[7], 1f, 1f};
+        draw(prog, v);
+    }
+
+    private void draw(int prog, float[] v) {
         vb.clear();
         vb.put(v).position(0);
         int aPos = GLES20.glGetAttribLocation(prog, "aPos"), aTc = GLES20.glGetAttribLocation(prog, "aTc");
@@ -1933,8 +1955,6 @@ final class TurboRender {
         GLES20.glDisableVertexAttribArray(aPos);
         GLES20.glDisableVertexAttribArray(aTc);
     }
-
-    // ------------------------------------------------------------------ EGL / GL helpers
 
     private void initEgl(Surface target) throws Exception {
         eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);

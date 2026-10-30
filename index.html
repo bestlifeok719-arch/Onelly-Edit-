@@ -1374,7 +1374,7 @@ function runExportOld(S,fps0,bpp,M,A,G){
   XO.rec=rec;XO.mode=M;XO.gif=[];XO.gl=0;xoShow(W+'×'+H+' · '+fps+' fps · ~'+Math.max(.1,br*total()/8e6).toFixed(1)+' MB');rec.start();show(0,true);requestAnimationFrame(expo);
 };
 /* ===== Standard Export v2: offline render. Same engine family as Fast Export (MP4Box + mp4-muxer + WebCodecs), but every frame is drawn with ALL effects ===== */
-function runExport(S,fps0,bpp,M,A,G,retry){if(!retry){window.__hyErr='';window.__hyTried=false;window.__noHy=window.__smart===false;window.__noNative=false;window.__turbo=!!window.__turboNext;window.__turboNext=false}
+function runExport(S,fps0,bpp,M,A,G,retry){if(!retry){window.__hyErr='';window.__hyTried=false;window.__noHy=window.__smart===false;window.__noNative=false}
   if(A||G)return runExportOld(S,fps0,bpp,M,A,G);if(!window.VideoEncoder||!window.VideoDecoder||!window.AudioEncoder||!window.OfflineAudioContext)return msg('⚠ Browser kun WebCodecs hin deeggaru (Chrome haaraa fayyadami)');
   runStd(S,fps0,bpp,M).catch(e=>{console.warn(e);try{xoHide()}catch(_){}window.__FC=null;if(window.__hyTried&&!window.__noHy&&!/storage|allocation|quota|memory/i.test(String(e&&e.message||e))){window.__noHy=true;window.__hyErr='Smart copy dogoggore: '+(e&&e.message||e);msg('⚠ '+window.__hyErr+' → offline render');return runExport(S,fps0,bpp,M,A,G,true)}msg('⚠ '+(e&&e.message||e))})}
 const sSleep=ms=>new Promise(r=>setTimeout(r,ms)),sYield=()=>new Promise(r=>{const c=new MessageChannel();c.port1.onmessage=()=>r();c.port2.postMessage(0)});
@@ -1560,12 +1560,11 @@ function nativeEligible(){
   if(!window.Capacitor||!Capacitor.isNativePlatform||!Capacitor.isNativePlatform())return NW('not in APK');
   if(!(Capacitor.Plugins&&Capacitor.Plugins.FastRender))return NW('plugin missing');
   if(bgm)return NW('background');
-  if(window.__turbo){if(ovs.some(o=>o.kind==='vid'))return NW('Turbo: video overlays come in stage 2')}
-  else if(ovs.length||(window.FADE&&(FADE.i||FADE.o)))return NW('overlays: browser export');
-  if(clips.length>1&&(window.__turbo||ovs.length||(window.FADE&&(FADE.i||FADE.o))))return NW('several clips: Turbo stage 2');
+  if(ovs.length||(window.FADE&&(FADE.i||FADE.o)))return NW('overlays: browser export');
+  if(clips.length>1&&(ovs.length||(window.FADE&&(FADE.i||FADE.o))))return NW('several clips with overlays');
   /* v16: music / extra audio / overlay-video sound / clip volume / audio fades are mixed on the web side (AAC) and joined to the GPU-rendered video by the APK */
   window.__natAud=!!(aud.length||window.__ovAud||clips.some(c=>c.vol!=null&&c.vol!==1)||(window.FADE&&(FADE.i||FADE.o)));
-  if(window.__natAud)return NW(window.__turbo?'Turbo: sound mix comes in stage 3':'sound mix: browser export');
+  if(window.__natAud)return NW('sound mix: browser export');
   const none=JSON.stringify(PRESETS.none),base={url:1,dur:1,in:1,out:1,speed:1,rot:1,flip:1,vol:1,f:1,name:1,id:1},emp=o=>!o||(typeof o==='object'&&!Object.keys(o).length);
   for(const c of clips){if(!(c.speed===1&&!c.rot&&!c.flip&&JSON.stringify(c.f)===none&&!Object.keys(c).some(k=>!base[k]&&c[k]&&!emp(c[k]))))return NW('clip edit (speed/rot/flip/vol/filter/fx)')}
   let vfr=0;const Tt0=total();
@@ -1575,8 +1574,8 @@ function nativeEligible(){
   return true}
 
 /* ---- Exports kept inside the app: play here, save to the phone only when the person wants ---- */
-const NLD={en:{play:'▶ Play',tophone:'⬇ Save to phone',share:'↗ Share',saved:'✓ Saved in phone',inapp:'📁 saved in app',mine:'My exports',none:'No exports yet',del:'Delete',gone:'File not found',close:'Close',phone:'Saved in Movies/OnellyEdit',back:'← Back',edit:'✎ Edit',k_fast:'⚡ Fast Export',d_fast:'Cuts only. Original quality, nothing is re-encoded.',k_standard:'🎬 Standard Export',d_standard:'Full render: overlays, text, effects and audio are included.'},
- om:{play:'▶ Taphisiisi',tophone:'⬇ Bilbila irratti buusi',share:'↗ Qooduu',saved:'✓ Bilbila irra buufameera',inapp:'📁 app keessatti kuufame',mine:'Video koo',none:'Video hin jiru',del:'Haqi',gone:'Faayilli hin argamne',close:'Cufi',phone:'Movies/OnellyEdit keessatti buufame',back:'← Duubatti',edit:'✎ Fooyyessi',k_fast:'⚡ Fast Export',d_fast:'Kutuu qofa. Qulqullina duraa, irra deebi\'ee encode hin ta\'u.',k_standard:'🎬 Standard Export',d_standard:'Guutuu hojjatame: overlay, text, effect fi sagaleen ni makama.'}};
+const NLD={en:{play:'▶ Play',tophone:'⬇ Save to phone',share:'↗ Share',saved:'✓ Saved in phone',inapp:'📁 saved in app',mine:'My exports',none:'No exports yet',del:'Delete',gone:'File not found',close:'Close',phone:'Saved in Movies/OnellyEdit',back:'← Back',edit:'✎ Edit',k_fast:'⚡ Fast Export',d_fast:'Cuts only. Original quality, nothing is re-encoded.',k_standard:'🎬 Standard Export',d_standard:'Full render: overlays, text, effects and audio are included.',k_turbo:'🚀 Turbo Export',d_turbo:'The phone\'s GPU does the work: very fast, even for long videos with many overlays.'},
+ om:{play:'▶ Taphisiisi',tophone:'⬇ Bilbila irratti buusi',share:'↗ Qooduu',saved:'✓ Bilbila irra buufameera',inapp:'📁 app keessatti kuufame',mine:'Video koo',none:'Video hin jiru',del:'Haqi',gone:'Faayilli hin argamne',close:'Cufi',phone:'Movies/OnellyEdit keessatti buufame',back:'← Duubatti',edit:'✎ Fooyyessi',k_fast:'⚡ Fast Export',d_fast:'Kutuu qofa. Qulqullina duraa, irra deebi\'ee encode hin ta\'u.',k_standard:'🎬 Standard Export',d_standard:'Guutuu hojjatame: overlay, text, effect fi sagaleen ni makama.',k_turbo:'🚀 Turbo Export',d_turbo:'GPU bilbilaa hojii hojjata: video dheeraa overlay baay\'ee qabu illee saffisaan.'}};
 const NL=k=>(NLD[typeof lang!=='undefined'?lang:'en']||NLD.en)[k]||NLD.en[k];
 const expGet=()=>{try{return JSON.parse(localStorage.getItem('onelly_exports')||'[]')}catch(_){return[]}};
 const expSet=a=>{try{localStorage.setItem('onelly_exports',JSON.stringify(a.slice(0,50)))}catch(_){}};
@@ -1595,7 +1594,7 @@ async function saveExportToPhone(it,btn){
     try{msg('✅ '+NL('phone'))}catch(_){}}
   catch(e){if(btn){btn.disabled=false;btn.textContent=NL('tophone')}try{msg('⚠ '+(e&&e.message||e))}catch(_){}}}
 /* v16: every finished Standard / Fast export is stored inside the app (no download, no % counter); Save to phone is one tap afterwards */
-function expName(m){const d=new Date(),p=n=>String(n).padStart(2,'0');return 'OnellyEdit_'+(m&&m.kind==='fast'?'Fast':'Standard')+(m&&m.res?'_'+m.res:'')+'_'+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+'.mp4'}
+function expName(m){const d=new Date(),p=n=>String(n).padStart(2,'0');return 'OnellyEdit_'+(m&&m.kind==='fast'?'Fast':m&&m.kind==='turbo'?'Turbo':'Standard')+(m&&m.res?'_'+m.res:'')+'_'+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+'.mp4'}
 /* the export is streamed into the app's storage while it is made (a copy of every written piece): when it is finished it only has to be renamed, nothing is copied again */
 function mkTee(){
   const C=window.Capacitor,FR=C&&C.isNativePlatform&&C.isNativePlatform()&&C.Plugins&&C.Plugins.FastRender;
@@ -1644,7 +1643,7 @@ async function openExports(){
     if(ok.length!==all.length)expSet(ok);L2.innerHTML='';
     if(!ok.length){L2.innerHTML='<div style="opacity:.7;padding:30px;text-align:center">'+NL('none')+'</div>';return}
     ok.forEach(it=>{const r=document.createElement('div');r.style.cssText='background:#2c2160;border-radius:12px;padding:12px;margin:8px 0';
-      const kd=it.kind==='fast'?'fast':'standard',mm=it.dur?Math.floor(it.dur/3600)+':'+String(Math.floor(it.dur%3600/60)).padStart(2,'0')+':'+String(it.dur%60).padStart(2,'0'):'';
+      const kd=it.kind==='fast'?'fast':it.kind==='turbo'?'turbo':'standard',mm=it.dur?Math.floor(it.dur/3600)+':'+String(Math.floor(it.dur%3600/60)).padStart(2,'0')+':'+String(it.dur%60).padStart(2,'0'):'';
       r.innerHTML='<div style="font-weight:700">Onelly Edit · '+NL('k_'+kd)+'</div><div style="opacity:.85;font-size:13px;margin:3px 0">'+NL('d_'+kd)+'</div><div style="opacity:.65;font-size:12px;margin:2px 0 10px;word-break:break-all">'+[it.res,mm,(it.mb||'?')+' MB',new Date(it.ts||0).toLocaleString()].filter(Boolean).join(' · ')+'<br>'+it.name+'</div>';
       const row=document.createElement('div');row.style.cssText='display:flex;gap:8px;flex-wrap:wrap';
       const mk=(t,f)=>{const b=document.createElement('button');b.className='xb';b.textContent=t;b.style.padding='9px 14px';b.onclick=()=>f(b);row.append(b);return b};
@@ -1655,8 +1654,8 @@ async function openExports(){
 try{const eb=document.getElementById('exp');if(eb&&window.Capacitor&&Capacitor.isNativePlatform&&Capacitor.isNativePlatform()){const fb=document.createElement('button');fb.textContent='📁';fb.setAttribute('aria-label','Exports');fb.style.cssText='background:#2c2160;color:#fff;border-radius:8px;padding:7px 11px;margin-right:6px';fb.onclick=openExports;eb.parentNode.insertBefore(fb,eb)}}catch(_){}
 async function nativeExport(W,H,br,aux){
   const FR=Capacitor.Plugins.FastRender,st=s=>{const e=$('#xst');if(e)e.textContent=s};window.__natSaved=false;
-  XO.mode='bal';XO.gif=[];XO.cancel=false;xoShow(W+'×'+H+(window.__turbo?' · 🚀 Turbo':' · ⚡ native GPU · B4'));const PT={t0:performance.now()};XO.rec={state:'recording',pause(){this.state='paused';PT.pt0=performance.now();FR.setPaused({paused:true}).catch(()=>{});setTimeout(async()=>{try{const r=await FR.pauseState();if(XO.paused)dgEl.textContent=r.waiting>0?'⏸ '+r.waiting+' render threads are waiting ✓':'⚠ Pause: no thread is waiting (work continues)'}catch(_){}},1500)},resume(){this.state='recording';if(PT.r0&&PT.pt0)PT.r0+=performance.now()-PT.pt0;PT.pt0=0;FR.setPaused({paused:false}).catch(()=>{});try{dgEl.textContent=window.__diag||''}catch(_){}},stop(){XO.cancel=true;try{XO.paused=false}catch(_){}FR.cancel().catch(()=>{})}};XO.off=true;try{gameToggle(false)}catch(_){}
-  const base=W+'×'+H+(window.__turbo?' · 🚀 Turbo':' · ⚡ native GPU · B4'),info=x=>{const e=$('#xinfo');if(e)e.textContent=base+(x?' · '+x:'')},secs=t=>Math.round((t||0)/1000)+'s';const cpT=()=>secs(PT.copy-PT.t0)+(PT.fast===2?' ✓reused':PT.fast?' ⚡fast':' (b64)');
+  XO.mode='bal';XO.gif=[];XO.cancel=false;xoShow(W+'×'+H+' · ⚡ native GPU · B4');const PT={t0:performance.now()};XO.rec={state:'recording',pause(){this.state='paused';PT.pt0=performance.now();FR.setPaused({paused:true}).catch(()=>{});setTimeout(async()=>{try{const r=await FR.pauseState();if(XO.paused)dgEl.textContent=r.waiting>0?'⏸ '+r.waiting+' render threads are waiting ✓':'⚠ Pause: no thread is waiting (work continues)'}catch(_){}},1500)},resume(){this.state='recording';if(PT.r0&&PT.pt0)PT.r0+=performance.now()-PT.pt0;PT.pt0=0;FR.setPaused({paused:false}).catch(()=>{});try{dgEl.textContent=window.__diag||''}catch(_){}},stop(){XO.cancel=true;try{XO.paused=false}catch(_){}FR.cancel().catch(()=>{})}};XO.off=true;try{gameToggle(false)}catch(_){}
+  const base=W+'×'+H+' · ⚡ native GPU · B4',info=x=>{const e=$('#xinfo');if(e)e.textContent=base+(x?' · '+x:'')},secs=t=>Math.round((t||0)/1000)+'s';const cpT=()=>secs(PT.copy-PT.t0)+(PT.fast===2?' ✓reused':PT.fast?' ⚡fast':' (b64)');
   const PR={max:0,lo:0,hi:.15},bump=p=>{PR.max=Math.max(PR.max,Math.min(1,p));xoSet(PR.max);if(!PT.r0){const e=$('#xeta');if(e)e.textContent=''}};
   /* ONE percent everywhere: copying the video and preparing overlays run at the same time and together fill 0-20%; rendering fills 20-100% */
   const PF={copy:0,ovl:0},prep=(k,f)=>{PF[k]=Math.max(PF[k],Math.min(1,f));bump(.2*(.5*PF.copy+.5*PF.ovl))},pc=()=>Math.round(PR.max*100)+'%',stPrep=()=>st((PF.copy<1?'📥 ':'')+(PF.ovl<1?'🖼 ':'')+pc());
@@ -1781,8 +1780,7 @@ async function nativeExport(W,H,br,aux){
     if(pwhy){try{dgEl.textContent+=' · parallel off: '+pwhy}catch(_){}}
     st('⚡ Qophaa\'aa jira…');PT.r0=XO.t0=performance.now();
     if(aux&&aux.audio&&!caps.mux)throw new Error('old APK: sound mix needs the new APK');
-    if(window.__turbo&&!caps.turbo)throw new Error('old APK: Turbo needs the new APK');
-    const rp=(window.__turbo?FR.turbo:FR.render).call(FR,{out:'out.mp4',width:W,height:H,bitrate:br,clips:clips.map(c=>({path:name[c.url],inMs:Math.round(c.in*1000),outMs:Math.round(c.out*1000)})),overlays:ovl,segments:nSeg,mute:!!(aux&&aux.audio)});
+    const rp=FR.render({out:'out.mp4',width:W,height:H,bitrate:br,clips:clips.map(c=>({path:name[c.url],inMs:Math.round(c.in*1000),outMs:Math.round(c.out*1000)})),overlays:ovl,segments:nSeg,mute:!!(aux&&aux.audio)});
     let audFile=null;
     if(aux&&aux.audio){try{audFile=await aux.audio()}catch(e){try{FR.cancel&&await FR.cancel()}catch(_){}try{await rp}catch(_){}throw e}}
     let res=await rp;
@@ -1903,7 +1901,7 @@ async function runStd(S,fps0,bpp,M){
     }else why=sWhy||('no copy: '+gTot+' GOP, '+gOv+' blocked by text/fade, '+cNP+' clips edited')}}catch(e){console.warn('smart copy off',e);hy=false;why='error '+(e&&e.message||e)}
   if(!hy&&!why)why='no plain GOP';
   if(!hy){units.length=0;fu.clear();covered.fill(0);FIRST.fill(0);own.fill(-1);covN=0;let cur=null;for(let i=0;i<NF;i++){if(!cur||cur.n>=GOP){cur={t:'e',n:0,c:[],first:i,last:i};units.push(cur);FIRST[i]=1}U[i]=units.length-1;fu.set(Math.round(i*1e6/fps),cur);cur.n++}}
-      if(hasNative()&&(window.__turbo||covN<NF*0.5)&&(window.__natAAC=!!acfg&&acfg.codec==='mp4a.40.2',nativeEligible())){encs.forEach(e=>{try{e.close()}catch(_){}});try{if(wr)await wr.close()}catch(_){}
+      if(hasNative()&&covN<NF*0.5&&(window.__natAAC=!!acfg&&acfg.codec==='mp4a.40.2',nativeEligible())){encs.forEach(e=>{try{e.close()}catch(_){}});try{if(wr)await wr.close()}catch(_){}
     /* v16: sound for the native export = same mixer as the browser export, AAC, wrapped in an audio-only mp4 that goes to the APK */
     const natAudio=async()=>{const ach=[],FRp=Capacitor.Plugins.FastRender;let er=null,w0=0,wq=Promise.resolve(),pend=0,werr=null;
       /* the finished audio is streamed to the phone's storage in ~2 MB pieces while it is being made: memory use stays small however long the video is */
@@ -1977,7 +1975,7 @@ $('#exp').onclick=()=>{
     else if(b.dataset.f){F=+b.dataset.f;mark('#fp',b);upd()}
     else if(b.dataset.m){M=b.dataset.m;mark('#ms',b);upd()}
     else if(b.id==='go'){closeP();runExport(S,F,BPP[Q],M)}
-    else if(b.id==='gotb'){closeP();window.__turboNext=true;runExport(S,F,BPP[Q],M)}
+    else if(b.id==='gotb'){closeP();if(window.turboExport)window.turboExport(calc())}
     else if(b.id==='gog'){closeP();runExport(240,30,BPP[Q],'fast',false,true)}
     else if(b.id==='goa'){closeP();runExport(144,30,BPP[Q],'fast',true)}}};
 ['gesturestart','gesturechange','gestureend'].forEach(n=>document.addEventListener(n,e=>e.preventDefault()));
@@ -2314,5 +2312,6 @@ var bypass=false;
 document.getElementById("exp").addEventListener("click",function(e){if(bypass){bypass=false;return}var el=eligible();if(!el.ok)return;e.stopImmediatePropagation();e.preventDefault();choice(el)},true);
 })();
 </script>
+<script src="turbo.js"></script>
 </body>
 </html>
