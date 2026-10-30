@@ -1582,6 +1582,7 @@ final class TurboRender {
         SurfaceTexture st = null;
         Surface decSurface = null, encSurface = null;
         boolean muxStarted = false;
+        android.os.HandlerThread frameThread = null;
         try {
             ex.setDataSource(srcPath);
             int vt = -1, at = -1;
@@ -1675,6 +1676,8 @@ final class TurboRender {
             GLES20.glViewport(0, 0, W, H);
 
             st = new SurfaceTexture(oesTex);
+            frameThread = new android.os.HandlerThread("turbo-frames");
+            frameThread.start();
             st.setOnFrameAvailableListener(new SurfaceTexture.OnFrameAvailableListener() {
                 @Override
                 public void onFrameAvailable(SurfaceTexture s) {
@@ -1683,10 +1686,23 @@ final class TurboRender {
                         frameLock.notifyAll();
                     }
                 }
-            });
+            }, new android.os.Handler(frameThread.getLooper()));
             decSurface = new Surface(st);
             dec = MediaCodec.createDecoderByType(vmime);
-            dec.configure(vf, decSurface, null, 0);
+            try {
+                vf.setInteger("operating-rate", Short.MAX_VALUE);
+                vf.setInteger("priority", 1);
+                dec.configure(vf, decSurface, null, 0);
+            } catch (Throwable e2) {
+                try {
+                    dec.release();
+                } catch (Throwable ignore) {
+                }
+                vf.removeKey("operating-rate");
+                vf.removeKey("priority");
+                dec = MediaCodec.createDecoderByType(vmime);
+                dec.configure(vf, decSurface, null, 0);
+            }
             dec.start();
             ex.selectTrack(vt);
             ex.seekTo(inUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
@@ -1904,6 +1920,7 @@ final class TurboRender {
             }
             try {
                 if (st != null) st.release();
+                if (frameThread != null) frameThread.quitSafely();
                 if (decSurface != null) decSurface.release();
                 if (encSurface != null) encSurface.release();
             } catch (Throwable ignore) {
