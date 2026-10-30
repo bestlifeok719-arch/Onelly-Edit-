@@ -237,7 +237,7 @@
         if (!XO.paused && p > 2) { var q = p / 100, el = $('#xeta'); if (el) el.textContent = fmt((performance.now() - rStart) / 1000 * (1 - q) / q) + ' ' + L('x_left'); }
       });
       var res = await FR.turbo({
-        out: 'turbo-out.mp4', width: W, height: H, bitrate: cfg.br,
+        out: 'turbo-out.mp4', width: W, height: H, bitrate: cfg.br, fps: cfg.fps || 0, codec: cfg.codec || 'avc', mute: !!cfg.mute,
         clips: [{ path: src, inMs: RND(c.in * 1000), outMs: RND(c.out * 1000) }], overlays: layers
       });
       var tRend = performance.now();
@@ -275,6 +275,84 @@
     }
   }
 
+  /* ------------------------------------------------------------------ Turbo settings screen (own screen, not the Standard Export one) */
+  var TX = {
+    en: { title: '🚀 Turbo Export', src: 'Same as video', codec: 'Video format', h264: 'H.264 (works everywhere)', h265: 'H.265 (smaller file)', sound: 'Sound', keep: 'Keep', mute: 'Remove',
+      start: '🚀 Start Turbo Export', chip: 'Video chip of this phone', upto: 'up to', fpsAt: 'fps at this size', speed: 'about', faster: '× faster than the video length', nosize: '⚠ this phone cannot make this size',
+      nohevc: 'H.265 is not available on this phone', cant: 'Turbo cannot do this project yet', use: 'Use Standard Export for it.', capped: 'no upscaling: your video is', est: 'about', loading: 'checking the phone…', long: 'Long video?' },
+    om: { title: '🚀 Turbo Export', src: 'Akka viidiyoo', codec: 'Format viidiyoo', h264: 'H.264 (iddoo hundatti hojjata)', h265: 'H.265 (faayilii xiqqaa)', sound: 'Sagalee', keep: 'Eegi', mute: 'Baasi',
+      start: '🚀 Turbo Export jalqabi', chip: 'Chip viidiyoo bilbila kanaa', upto: 'hanga', fpsAt: 'fps guddina kanaan', speed: 'akka', faster: '× dheerina viidiyoo caalaa saffisaa', nosize: '⚠ bilbilli kun guddina kana hin hojjatu',
+      nohevc: 'H.265 bilbila kana irratti hin jiru', cant: 'Turbo pirojeektii kana amma hin hojjatu', use: 'Standard Export fayyadami.', capped: 'guddisuu hin jiru: viidiyoon kee', est: 'tilmaama', loading: 'bilbila ilaalaa jira…', long: 'Viidiyoo dheeraa?' }
+  };
+  var TT = function (k) { var l = (typeof lang !== 'undefined' && TX[lang]) ? lang : 'en'; return TX[l][k] || TX.en[k] || k; };
+  var RESL = [144, 240, 360, 480, 540, 720, 1080, 1440, 2160], FPSL = [0, 24, 30, 48, 60, 90, 120];
+  var resName = function (h) { return h === 2160 ? '4K' : h === 1440 ? '2K' : h + 'p'; };
+  var loadCfg = function () { try { return JSON.parse(localStorage.getItem('onelly_turbo_cfg') || '{}') || {}; } catch (_) { return {}; } };
+  var saveCfg = function (o) { try { localStorage.setItem('onelly_turbo_cfg', JSON.stringify(o)); } catch (_) { } };
+
+  function outSize(S) {
+    var ev = function (n) { return Math.round(n / 2) * 2; }, rt = (typeof ratio !== 'undefined' && ratio) ? ratio : 16 / 9, vEl = document.getElementById('v'),
+      srcH = vEl && vEl.videoHeight ? Math.min(vEl.videoWidth, vEl.videoHeight) : 0, Sx = (srcH && S > srcH && !window.__upscale) ? srcH : S;
+    return { W: rt >= 1 ? ev(Sx * rt) : ev(Sx), H: rt >= 1 ? ev(Sx) : ev(Sx / rt), Sx: Sx, srcH: srcH, capped: Sx !== S };
+  }
+
+  function openPanel() {
+    if (!clips.length) { try { msg(L('first')); } catch (_) { } return; }
+    var c0 = loadCfg(), S = RESL.indexOf(c0.S) >= 0 ? c0.S : 720, F = FPSL.indexOf(c0.F) >= 0 ? c0.F : 0, Q = ['small', 'bal', 'best'].indexOf(c0.Q) >= 0 ? c0.Q : 'bal',
+      C = c0.C === 'hevc' ? 'hevc' : 'avc', A = c0.A === 'mute' ? 'mute' : 'keep', info = null, seq = 0, T = len(clips[0]);
+    var chips = function (id, items, cur) { return '<div class="chips" id="' + id + '">' + items.map(function (it) { return '<button class="chip ' + (it[0] === cur ? 'on' : '') + '" data-v="' + it[0] + '">' + it[1] + '</button>'; }).join('') + '</div>'; };
+    var calc = function () {
+      var o = outSize(S), Fe = F || 30, br = Math.round(o.W * o.H * Fe * BPP[Q] * (MULT[o.Sx] || 1) * (C === 'hevc' ? .65 : 1));
+      return { W: o.W, H: o.H, br: br, mb: br * T / 8 / 1e6, o: o };
+    };
+    var render = function () {
+      var r = calc(), reason = why(), el = info && (C === 'hevc' ? info.hevc : info.avc);
+      $('#tb-rs').innerHTML = RESL.map(function (h) { return '<button class="chip ' + (h === S ? 'on' : '') + '" data-v="' + h + '">' + resName(h) + '</button>'; }).join('');
+      $('#tb-qs').innerHTML = ['small', 'bal', 'best'].map(function (q) { return '<button class="chip ' + (q === Q ? 'on' : '') + '" data-v="' + q + '">' + L('q_' + q) + '</button>'; }).join('');
+      $('#tb-fs').innerHTML = FPSL.map(function (f) { return '<button class="chip ' + (f === F ? 'on' : '') + '" data-v="' + f + '">' + (f ? f : TT('src')) + '</button>'; }).join('');
+      var hevcOk = !info || (info.hevc && info.hevc.has);
+      $('#tb-cs').innerHTML = '<button class="chip ' + (C === 'avc' ? 'on' : '') + '" data-v="avc">' + TT('h264') + '</button><button class="chip ' + (C === 'hevc' ? 'on' : '') + '" data-v="hevc" ' + (hevcOk ? '' : 'style="opacity:.4"') + '>' + TT('h265') + '</button>';
+      $('#tb-as').innerHTML = '<button class="chip ' + (A === 'keep' ? 'on' : '') + '" data-v="keep">' + TT('keep') + '</button><button class="chip ' + (A === 'mute' ? 'on' : '') + '" data-v="mute">' + TT('mute') + '</button>';
+      var lines = ['<b>' + r.W + '×' + r.H + '</b> · ' + (F ? F + ' fps' : TT('src')) + ' · ' + TT('est') + ' ' + (r.mb < 10 ? r.mb.toFixed(1) : Math.round(r.mb)) + ' MB'];
+      if (r.o.capped) lines.push('ℹ ' + TT('capped') + ' ' + r.o.srcH + 'p');
+      var bad = false;
+      if (!info) lines.push(TT('loading'));
+      else if (!el || !el.has) { lines.push(TT('nohevc')); bad = C === 'hevc'; }
+      else if (!el.sizeOk) { lines.push(TT('nosize') + ' (' + r.W + '×' + r.H + ')'); bad = true; }
+      else {
+        var ofps = F || 30;
+        lines.push('📱 ' + TT('chip') + ': ' + el.name + (el.hw ? ' (HW)' : ' (SW)') + ' · ' + TT('upto') + ' ~' + el.maxFps + ' ' + TT('fpsAt') + ' → ' + TT('speed') + ' ' + Math.max(1, Math.floor(el.maxFps / ofps)) + TT('faster'));
+      }
+      if (reason) lines.push('<span style="color:#ff8a8a">⚠ ' + TT('cant') + ': ' + reason + '. ' + TT('use') + '</span>');
+      $('#tb-info').innerHTML = lines.join('<br>');
+      var go = $('#tb-go'); go.disabled = !!(reason || bad); go.style.opacity = go.disabled ? .45 : 1;
+    };
+    var refreshInfo = function () {
+      var o = outSize(S), my = ++seq, FR = getFR();
+      info = null;
+      if (FR && FR.turboInfo) FR.turboInfo({ width: o.W, height: o.H }).then(function (r) { if (my === seq) { info = r; render(); } }).catch(function () { if (my === seq) { info = { avc: { has: true, hw: true, sizeOk: true, maxFps: 0, name: '?' }, hevc: { has: false } }; render(); } });
+    };
+    panel(TT('title'),
+      '<b>' + L('res') + '</b><div class="chips" id="tb-rs"></div><b>' + L('quality') + '</b><div class="chips" id="tb-qs"></div><b>' + L('fps') + '</b><div class="chips" id="tb-fs"></div>' +
+      '<b>' + TT('codec') + '</b><div class="chips" id="tb-cs"></div><b>' + TT('sound') + '</b><div class="chips" id="tb-as"></div>' +
+      '<div id="tb-info" style="font-size:12px;opacity:.95;margin:8px 0;line-height:1.55"></div><div class="chips"><button class="chip on" id="tb-go">' + TT('start') + '</button></div>');
+    $('#panel').onclick = function (e) {
+      var b = e.target.closest ? e.target.closest('button') : null;
+      if (!b) return;
+      if (b.id === 'tb-go') {
+        if (b.disabled) return;
+        var r = calc(); saveCfg({ S: S, F: F, Q: Q, C: C, A: A }); closeP();
+        window.turboExport({ W: r.W, H: r.H, br: r.br, fps: F, codec: C, mute: A === 'mute' });
+        return;
+      }
+      var par = b.parentNode && b.parentNode.id, v = b.getAttribute('data-v');
+      if (!par || v == null) return;
+      if (par === 'tb-rs') { S = +v; refreshInfo(); } else if (par === 'tb-qs') Q = v; else if (par === 'tb-fs') { F = +v; } else if (par === 'tb-cs') { C = v; } else if (par === 'tb-as') A = v;
+      render();
+    };
+    render(); refreshInfo();
+  }
+
   window.turboExport = async function (cfg) {
     var r = why();
     if (r) { try { msg('🚀 Turbo: ' + r + ' → Standard Export'); } catch (_) { } return; }
@@ -290,4 +368,17 @@
     }
   };
   window.turboWhy = why;
+
+  /* own button in the top bar, next to Export (only inside the APK) */
+  function mount() {
+    if (!apk() || document.getElementById('turbo-btn')) return;
+    var ex = document.getElementById('exp');
+    if (!ex || !ex.parentNode) return;
+    var b = document.createElement('button');
+    b.className = 'exp'; b.id = 'turbo-btn'; b.textContent = '🚀 Turbo'; b.style.marginLeft = '6px';
+    b.onclick = openPanel;
+    ex.parentNode.insertBefore(b, ex.nextSibling);
+  }
+  mount();
+  if (document.readyState !== 'complete') window.addEventListener('load', mount);
 })();

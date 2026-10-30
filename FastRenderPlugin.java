@@ -306,6 +306,62 @@ public class FastRenderPlugin extends Plugin {
         }, "onelly-mux").start();
     }
 
+    /** v16: what the phone's video chip can do for Turbo (size supported, speed, H.265). Used by the Turbo settings screen. */
+    @PluginMethod
+    public void turboInfo(PluginCall call) {
+        try {
+            int w = call.getInt("width", 1280), h = call.getInt("height", 720);
+            JSObject o = new JSObject();
+            String[] mimes = {"video/avc", "video/hevc"};
+            for (int z = 0; z < 2; z++) {
+                String key = z == 0 ? "avc" : "hevc";
+                boolean has = false, hw = false, sizeOk = false;
+                int maxFps = 0;
+                String name = "";
+                android.media.MediaCodecInfo[] list = new android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS).getCodecInfos();
+                for (android.media.MediaCodecInfo ci : list) {
+                    if (!ci.isEncoder()) continue;
+                    boolean sup = false;
+                    for (String t : ci.getSupportedTypes()) if (t.equalsIgnoreCase(mimes[z])) sup = true;
+                    if (!sup) continue;
+                    boolean isHw;
+                    if (android.os.Build.VERSION.SDK_INT >= 29) isHw = ci.isHardwareAccelerated();
+                    else isHw = !(ci.getName().startsWith("OMX.google.") || ci.getName().startsWith("c2.android."));
+                    if (!isHw && has) continue;
+                    try {
+                        android.media.MediaCodecInfo.VideoCapabilities vc = ci.getCapabilitiesForType(mimes[z]).getVideoCapabilities();
+                        boolean so = vc.isSizeSupported(w, h);
+                        int mf = 0;
+                        if (so) {
+                            try {
+                                mf = vc.getSupportedFrameRatesFor(w, h).getUpper().intValue();
+                            } catch (Throwable ignore) {
+                            }
+                        }
+                        if (!has || (isHw && !hw) || (isHw == hw && mf > maxFps)) {
+                            has = true;
+                            hw = isHw;
+                            sizeOk = so;
+                            maxFps = mf;
+                            name = ci.getName();
+                        }
+                    } catch (Throwable ignore) {
+                    }
+                }
+                JSObject e = new JSObject();
+                e.put("has", has);
+                e.put("hw", hw);
+                e.put("sizeOk", sizeOk);
+                e.put("maxFps", maxFps);
+                e.put("name", name);
+                o.put(key, e);
+            }
+            call.resolve(o);
+        } catch (Throwable e) {
+            call.reject("turboInfo: " + e);
+        }
+    }
+
     /** v16: Turbo export = own engine (TurboRender): hardware decoder -> OpenGL -> hardware encoder. Independent of Media3, Fast Export and Standard Export. */
     @PluginMethod
     public void turbo(final PluginCall call) {
@@ -1465,6 +1521,7 @@ final class TurboRender {
     private final float[] texMat = new float[16];
     private final Object frameLock = new Object();
     private boolean frameReady = false;
+    private long outFrames = 0, lastOutUs = 0;
 
     JSONObject run(JSONObject a) throws Exception {
         cancel = false;
@@ -1539,31 +1596,47 @@ final class TurboRender {
                 throw new Exception("turbo: rotated video not supported yet");
             String vmime = vf.getString(MediaFormat.KEY_MIME);
             int fps = 30;
-            try {
-                if (vf.containsKey(MediaFormat.KEY_FRAME_RATE)) fps = Math.max(1, Math.min(120, vf.getInteger(MediaFormat.KEY_FRAME_RATE)));
-            } catch (Throwable ignore) {
+            if (vf.containsKey(MediaFormat.KEY_FRAME_RATE)) {
+                try {
+                    fps = vf.getInteger(MediaFormat.KEY_FRAME_RATE);
+                } catch (Throwable e1) {
+                    try {
+                        fps = Math.round(vf.getFloat(MediaFormat.KEY_FRAME_RATE));
+                    } catch (Throwable ignore) {
+                    }
+                }
+                fps = Math.max(1, Math.min(240, fps));
             }
+            final int tfps = a.optInt("fps", 0);
+            final boolean hevc = "hevc".equals(a.optString("codec", "avc"));
+            final String emime = hevc ? "video/hevc" : "video/avc";
+            final boolean tickMode = tfps > 0 && Math.abs(tfps - fps) > 1; // other frame rate than the video: frames are repeated / skipped on a fixed clock, overlays still move smoothly
+            final int outFps = tickMode ? tfps : fps;
+            final double tickDt = 1e6 / outFps;
+            final long slack = (long) Math.min(tickDt / 4.0, 4000.0);
             long durUs = vf.containsKey(MediaFormat.KEY_DURATION) ? vf.getLong(MediaFormat.KEY_DURATION) : 0;
             final long outUs = outMs > 0 ? outMs * 1000L : durUs;
             if (outUs <= inUs) throw new Exception("turbo: empty range");
             final double span = outUs - inUs;
 
-            MediaFormat ef = MediaFormat.createVideoFormat("video/avc", W, H);
+            MediaFormat ef = MediaFormat.createVideoFormat(emime, W, H);
             ef.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
             ef.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
-            ef.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
+            ef.setInteger(MediaFormat.KEY_FRAME_RATE, outFps);
             ef.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2);
             try {
                 ef.setInteger("priority", 1);
                 ef.setInteger("operating-rate", Short.MAX_VALUE);
             } catch (Throwable ignore) {
             }
-            try {
-                ef.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh);
-                ef.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel41);
-            } catch (Throwable ignore) {
+            if (!hevc) {
+                try {
+                    ef.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh);
+                    ef.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel41);
+                } catch (Throwable ignore) {
+                }
             }
-            enc = MediaCodec.createEncoderByType("video/avc");
+            enc = MediaCodec.createEncoderByType(emime);
             try {
                 enc.configure(ef, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
             } catch (Throwable e) {
@@ -1573,7 +1646,7 @@ final class TurboRender {
                 }
                 ef.removeKey(MediaFormat.KEY_PROFILE);
                 ef.removeKey(MediaFormat.KEY_LEVEL);
-                enc = MediaCodec.createEncoderByType("video/avc");
+                enc = MediaCodec.createEncoderByType(emime);
                 enc.configure(ef, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
             }
             encSurface = enc.createInputSurface();
@@ -1639,6 +1712,10 @@ final class TurboRender {
             long frames = 0, lastNs = System.nanoTime(), lastFrames = 0;
             double fpsNow = 0;
             long lastPtsUs = inUs;
+            boolean haveFrame = false;
+            long tickBase = 0, nextTick = 0, tickN = 0;
+            outFrames = 0;
+            lastOutUs = inUs;
 
             while (!encDone) {
                 if (cancel) throw new Exception("cancelled");
@@ -1666,21 +1743,41 @@ final class TurboRender {
                     if (oi >= 0) {
                         boolean eos = (di.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
                         long pts = di.presentationTimeUs;
-                        boolean render = di.size > 0 && pts >= inUs && pts < outUs;
-                        dec.releaseOutputBuffer(oi, render);
-                        if (render) {
+                        boolean use = di.size > 0 && pts >= inUs && pts < outUs;
+                        if (tickMode && use && haveFrame) { // ticks that still belong to the previous video frame
+                            while (nextTick + slack < pts && nextTick < outUs) {
+                                emit(layers, nextTick, inUs, W, H);
+                                tickN++;
+                                nextTick = tickBase + (long) (tickN * tickDt);
+                            }
+                        }
+                        dec.releaseOutputBuffer(oi, use);
+                        if (use) {
                             waitFrame();
                             st.updateTexImage();
                             st.getTransformMatrix(texMat);
-                            drawFrame(layers, (pts - inUs) / 1000.0, W, H);
-                            EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, (pts - inUs) * 1000L);
-                            EGL14.eglSwapBuffers(eglDisplay, eglSurface);
-                            frames++;
-                            lastPtsUs = pts;
+                            if (!haveFrame) {
+                                haveFrame = true;
+                                tickBase = pts;
+                                tickN = 0;
+                                nextTick = pts;
+                            }
+                            if (!tickMode) emit(layers, pts, inUs, W, H);
                         }
-                        if (eos || pts >= outUs) decDone = true;
+                        if (eos || pts >= outUs) {
+                            if (tickMode && haveFrame) {
+                                while (nextTick < outUs) {
+                                    emit(layers, nextTick, inUs, W, H);
+                                    tickN++;
+                                    nextTick = tickBase + (long) (tickN * tickDt);
+                                }
+                            }
+                            decDone = true;
+                        }
                     }
                 }
+                frames = outFrames;
+                lastPtsUs = lastOutUs;
 
                 while (true) {
                     int ei2 = enc.dequeueOutputBuffer(ei, 0);
@@ -1818,6 +1915,15 @@ final class TurboRender {
             }
             releaseEgl();
         }
+    }
+
+    /** Draws the latest video frame + overlays for output time tUs and hands the picture to the encoder. */
+    private void emit(List<Layer> layers, long tUs, long inUs, int W, int H) {
+        drawFrame(layers, (tUs - inUs) / 1000.0, W, H);
+        EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, (tUs - inUs) * 1000L);
+        EGL14.eglSwapBuffers(eglDisplay, eglSurface);
+        outFrames++;
+        lastOutUs = tUs;
     }
 
     private void waitFrame() throws Exception {
