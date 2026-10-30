@@ -1640,7 +1640,8 @@ final class TurboRender {
 
             while (!encDone) {
                 if (cancel) throw new Exception("cancelled");
-                while (paused && !cancel) Thread.sleep(80);
+                FastRenderPlugin.waitIfPaused(); // same pause mechanism as the rest of the plugin (counted by pauseState)
+                if (cancel) throw new Exception("cancelled");
 
                 // 1) feed the decoder
                 if (!inDone) {
