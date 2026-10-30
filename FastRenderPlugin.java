@@ -1522,6 +1522,7 @@ final class TurboRender {
     private final Object frameLock = new Object();
     private boolean frameReady = false;
     private long outFrames = 0, lastOutUs = 0;
+    private long pDec = 0, pFrm = 0, pDrw = 0, pSwp = 0, pEnc = 0; // where the time goes (nanoseconds), reported back for tuning
 
     JSONObject run(JSONObject a) throws Exception {
         cancel = false;
@@ -1738,6 +1739,7 @@ final class TurboRender {
                 FastRenderPlugin.waitIfPaused(); // same pause mechanism as the rest of the plugin (counted by pauseState)
                 if (cancel) throw new Exception("cancelled");
 
+                long q0 = System.nanoTime();
                 if (!inDone) {
                     int ii = dec.dequeueInputBuffer(0);
                     if (ii >= 0) {
@@ -1756,6 +1758,7 @@ final class TurboRender {
 
                 if (!decDone) {
                     int oi = dec.dequeueOutputBuffer(di, 2000);
+                    pDec += System.nanoTime() - q0;
                     if (oi >= 0) {
                         boolean eos = (di.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
                         long pts = di.presentationTimeUs;
@@ -1769,9 +1772,11 @@ final class TurboRender {
                         }
                         dec.releaseOutputBuffer(oi, use);
                         if (use) {
+                            long f0 = System.nanoTime();
                             waitFrame();
                             st.updateTexImage();
                             st.getTransformMatrix(texMat);
+                            pFrm += System.nanoTime() - f0;
                             if (!haveFrame) {
                                 haveFrame = true;
                                 tickBase = pts;
@@ -1795,6 +1800,7 @@ final class TurboRender {
                 frames = outFrames;
                 lastPtsUs = lastOutUs;
 
+                long e0 = System.nanoTime();
                 while (true) {
                     int ei2 = enc.dequeueOutputBuffer(ei, 0);
                     if (ei2 == MediaCodec.INFO_TRY_AGAIN_LATER) break;
@@ -1820,6 +1826,7 @@ final class TurboRender {
                     }
                 }
 
+                pEnc += System.nanoTime() - e0;
                 if (muxStarted && !audioDone) {
                     long upto = (lastPtsUs - inUs) + 500000L;
                     while (true) {
@@ -1888,6 +1895,8 @@ final class TurboRender {
             res.put("fps", Math.round(frames * 1e9 / Math.max(1, System.nanoTime() - t0)));
             res.put("enc", enc.getName());
             res.put("ovDiag", dg.toString());
+            double tot = Math.max(1, pDec + pFrm + pDrw + pSwp + pEnc);
+            res.put("prof", "decode " + Math.round(pDec * 100 / tot) + "% · frame " + Math.round(pFrm * 100 / tot) + "% · draw " + Math.round(pDrw * 100 / tot) + "% · swap " + Math.round(pSwp * 100 / tot) + "% · encoder " + Math.round(pEnc * 100 / tot) + "%");
             return res;
         } catch (Throwable e) {
             try {
@@ -1936,9 +1945,13 @@ final class TurboRender {
 
     /** Draws the latest video frame + overlays for output time tUs and hands the picture to the encoder. */
     private void emit(List<Layer> layers, long tUs, long inUs, int W, int H) {
+        long d0 = System.nanoTime();
         drawFrame(layers, (tUs - inUs) / 1000.0, W, H);
+        long d1 = System.nanoTime();
         EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, (tUs - inUs) * 1000L);
         EGL14.eglSwapBuffers(eglDisplay, eglSurface);
+        pDrw += d1 - d0;
+        pSwp += System.nanoTime() - d1;
         outFrames++;
         lastOutUs = tUs;
     }

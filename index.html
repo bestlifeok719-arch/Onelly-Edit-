@@ -2614,7 +2614,7 @@ document.getElementById("exp").addEventListener("click",function(e){if(bypass){b
       uiSet(1, '✓ ' + T2('done'), '', secR > 0.5 ? RND(T / secR * 10) / 10 + T2('rt') : '');
       document.getElementById('tbo-pct').textContent = '✓';
       document.getElementById('tbo-info').textContent = res.sizeMB + ' MB · ' + Math.min(W, H) + 'p · ' + (res.fps || '?') + ' fps · ' + (kept ? NL('inapp') : sv.where);
-      document.getElementById('tbo-dg').textContent = T2('engine') + ' · enc ' + (res.enc || '?') + ' · copy ' + s1(t0, tCopy) + ' · overlays ' + s1(tCopy, tScene) + ' (' + layers.length + ') · render ' + s1(rStart, tRend) + ' · hits ' + dg.join(' ').slice(0, 80);
+      document.getElementById('tbo-dg').textContent = T2('engine') + ' · enc ' + (res.enc || '?') + ' · copy ' + s1(t0, tCopy) + ' · overlays ' + s1(tCopy, tScene) + ' (' + layers.length + ') · render ' + s1(rStart, tRend) + ' · ' + (res.prof || '') + ' · hits ' + dg.join(' ').slice(0, 80);
       var act = document.getElementById('tbo-act');
       if (kept) {
         var it = { abs: kept.abs, name: fin, mb: res.sizeMB };

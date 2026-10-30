@@ -80,3 +80,5 @@ v16s - Turbo has its OWN settings screen (button '🚀 Turbo' in the top bar nex
 v16t - Turbo module is now INSIDE index.html (no separate turbo.js to upload). Export tap: Fast chooser has 🚀 Turbo; projects with overlays get a small sheet (Standard export / 🚀 Turbo Export). Header button 🚀 Turbo stays.
 v16u - Turbo has its own progress/result screen (own page: phases, percent, ETA, x-real-time speed, Pause/Resume/Cancel, Play/Save/Close). No Standard export screen (xoShow/XO) is used any more.
 v16v - Turbo speed: frame-ready callback on its own thread (was the busy UI thread), decoder asked for full speed. First device result: 5 overlays drawn on all 9227 frames, 129 fps = 5.2x real-time.
+v16w - Turbo reports where the time goes (decode / frame / draw / swap / encoder %), shown in the result line.
+v16w - Turbo reports where the time goes (decode / frame / draw / swap / encoder %), shown in the result line.
